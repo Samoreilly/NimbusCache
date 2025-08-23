@@ -1,0 +1,4 @@
+Key: foo, Value: bar
+Key: foo, Value: bar, Expiry: 1.000299124s, Frequency: 2
+Key: foo, Value: bar, Expiry: 1.000276129s, Frequency: 2
+Key: foo, Value: bar, Expiry: 1.000302486s, Frequency: 1
