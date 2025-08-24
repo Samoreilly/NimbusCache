@@ -2,16 +2,17 @@ use dashmap::DashMap;
 use std::hash::Hash;
 use std::time::Duration;
 use std::time::Instant;
-use std::thread::sleep;
 use std::sync::Arc;
 use std::io::Write;
 use std::fs::OpenOptions;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use std::error::Error;
 use std::net::SocketAddr;
+use axum::{routing::get, Extension, Router};
+use axum::{
+    extract::{Path},
+};
 
-static DURATION: Duration = Duration::from_secs(5);
+
+static DURATION: Duration = Duration::from_secs(60);
 static CAPACITY: usize = 100;
 
 
@@ -33,28 +34,6 @@ impl<K, V> Cache<K, V> where
         Cache {
             map: DashMap::new(),
         }
-    }
-    async fn process_socket(&self, mut socket: TcpStream){
-        println!("Got connection!");
-        let mut stream = socket;
-        stream.write_all(b"Hello, world!").await.unwrap();
-    }
-    async fn accept_connection(self: Arc<Self>, addr: &str) -> Result<(),Box<dyn Error>>  {
-        println!("Listening on: {}", addr);
-        let listener = TcpListener::bind(addr).await?;
-
-            loop {
-                let (socket, client_addr) : (TcpStream, SocketAddr) = listener.accept().await?;
-                println!("Got connection from: {}", client_addr);
-                let self_clone = self.clone();
-
-                tokio::spawn(async move {
-                    self_clone.process_socket(socket).await;//create new thread to process socket
-                });
-            }
-
-
-        Ok(())
     }
 
     fn clean_lfu(self: Arc<Self>){
@@ -78,7 +57,7 @@ impl<K, V> Cache<K, V> where
         self.map.insert(key, entry);
     }
 
-    fn get(&self, key: &K) -> Option<V>{
+    fn get_value(&self, key: &K) -> Option<V>{
 
         if let Some(mut self_ref) = self.map.get_mut(key) {//gets direct object so it can be modified in place
 
@@ -126,8 +105,17 @@ impl<K, V> Cache<K, V> where
         writeln!(file, "Key: {}, Value: {}, Expiry: {:?}, Frequency: {}", key, value.value, value.expires_at.elapsed(), value.frequency).unwrap();
     }
 }
+fn build_http(cache: Arc<Cache<String, String>>) -> Router {
+    Router::new()
+        .route("/info/{key}", get(get_value_http))
+        .layer(Extension(cache))
 
+}
+async fn get_value_http(Path(key): Path<String>, Extension(cache): Extension<Arc<Cache<String, String>>>)
+                        -> String {
+    cache.get_value(&key).unwrap_or_else(|| "Not found".to_string())
 
+}
 #[tokio::main]
 async fn main(){
 
@@ -135,18 +123,23 @@ async fn main(){
     let cache = Arc::new(Cache::<String, String>::new());//arcs allows cache to be shared between threads
     cache.clone().clean_lfu();
 
-    let server_handle = tokio::spawn({
-        let cache_clone = cache.clone();
-        async move {
-            cache_clone.accept_connection("127.0.0.1:8080").await.expect("Server failed to start")
-        }
+    cache.insert("foo".to_string(), "bar".to_string());
+    cache.insert("sam".to_string(), "bar".to_string());
+
+    cache.insert("http".to_string(), "lol".to_string());
+
+    let app = build_http(cache.clone());
+    let addr = SocketAddr::from(([127, 0, 0, 1], 5000));
+    println!("listening on {}", addr);
+    let server_handle = tokio::spawn(async move {
+        axum_server::bind(addr)
+            .serve(app.into_make_service())
+            .await
+            .unwrap();
     });
 
 
-
-    cache.insert("foo".to_string(), "bar".to_string());
-
-    if let Some(val) = cache.get(&"foo".to_string()) {
+    if let Some(val) = cache.get_value(&"foo".to_string()) {
         println!("Got immediately: {}", val);
     } else {
         println!("Missing immediately!");
@@ -154,7 +147,7 @@ async fn main(){
 
     tokio::time::sleep(DURATION + Duration::from_secs(1)).await;
 
-    if let Some(val) = cache.get(&"foo".to_string()) {
+    if let Some(val) = cache.get_value(&"foo".to_string()) {
         println!("Got after wait: {}", val);
     }
     server_handle.await.unwrap();
