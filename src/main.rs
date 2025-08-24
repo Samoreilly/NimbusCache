@@ -1,25 +1,28 @@
 use dashmap::DashMap;
 use std::hash::Hash;
 use std::time::Duration;
-use std::time::Instant;
 use std::sync::Arc;
-use std::io::Write;
-use std::fs::OpenOptions;
 use std::net::SocketAddr;
 use axum::{routing::get, Extension, Router};
 use axum::{
     extract::{Path},
 };
+use std::time::{SystemTime, UNIX_EPOCH};
+use serde::{Serialize, Deserialize};
+use serde_json;
+use tokio::signal;
+use std::fs::File;
+use std::io::BufReader;
+use serde::de::DeserializeOwned;
 
-
-static DURATION: Duration = Duration::from_secs(60);
+static DURATION: Duration = Duration::from_secs(100);
 static CAPACITY: usize = 100;
 
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CacheEntry<V> {
     value: V,
-    expires_at: Instant,
+    expires_at: u64,
     frequency: u32,
 }
 struct Cache<K, V> {
@@ -27,8 +30,8 @@ struct Cache<K, V> {
 }
 
 impl<K, V> Cache<K, V> where
-    K: Eq + Hash + Clone + std::fmt::Display + std::marker::Send + std::marker::Sync + 'static, // defines the type of key and value
-    V: Clone + std::marker::Send + std::marker::Sync + std::fmt::Display + 'static,
+    K: Eq + Hash + Clone + std::fmt::Display + std::marker::Send + std::marker::Sync + Serialize + DeserializeOwned + 'static, // defines the type of key and value
+    V: Clone + std::marker::Send + std::marker::Sync + std::fmt::Display + Serialize + DeserializeOwned + 'static,
 {
     fn new () -> Self {
         Cache {
@@ -48,27 +51,28 @@ impl<K, V> Cache<K, V> where
     fn insert(&self, key: K, value: V){
         let entry = CacheEntry {
             value,
-            expires_at: Instant::now() + DURATION,
+            expires_at: now_epoch_seconds() + DURATION.as_secs(),
             frequency: 0,
         };
         if self.map.len() >= CAPACITY {
             self.lfu();
         }
         self.map.insert(key, entry);
+        self.write_to_file("dashmap.txt");
     }
 
     fn get_value(&self, key: &K) -> Option<V>{
 
         if let Some(mut self_ref) = self.map.get_mut(key) {//gets direct object so it can be modified in place
 
-            if Instant::now() >= self_ref.expires_at {
+            if now_epoch_seconds() >= self_ref.expires_at {
                 let cloned_key = key.clone();
-                let entry = self_ref.clone();
+
                 drop(self_ref);//drops the reference/lock so it can be removed from the map
 
                 self.map.remove(key);
                 println!("Removed expired key: {}", cloned_key);
-                self.write_deleted_keys_to_file(cloned_key, entry);
+                self.write_to_file("deleted_keys.txt");
                 return None;
             }
             self_ref.frequency += 1;
@@ -80,7 +84,7 @@ impl<K, V> Cache<K, V> where
 
     fn lfu(&self){
 
-        let mut min_freq = std::u32::MAX;
+        let mut min_freq = u32::MAX;
         let mut min_key = None;
 
         for kv in self.map.iter() {
@@ -95,16 +99,27 @@ impl<K, V> Cache<K, V> where
         }
 
     }
+    fn read_from_file(&self, path: &str) {
+        let file = File::open(path).expect("file not found");
+        let reader = BufReader::new(file);
 
-    fn write_deleted_keys_to_file(&self, key: K, value: CacheEntry<V>){
-        let mut file = OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open("deleted_keys.txt")
-            .unwrap();
-        writeln!(file, "Key: {}, Value: {}, Expiry: {:?}, Frequency: {}", key, value.value, value.expires_at.elapsed(), value.frequency).unwrap();
+        let entries: Vec<(K, CacheEntry<V>)> = serde_json::from_reader(reader).unwrap();
+
+        for(k, v) in entries {
+            self.map.insert(k, v);
+        }
+        println!("Finished reading from file, length of vector: {}", self.map.len())
+    }
+    fn write_to_file(&self, path: &str) {
+        println!("Writing to file");
+        let entries: Vec<(_, _)> = self.map.iter().map(|kv| (kv.key().clone(), kv.value().clone())).collect();
+
+        let serialized = serde_json::to_string_pretty(&entries).unwrap();
+
+        std::fs::write("dashmap.txt", serialized).unwrap();
     }
 }
+
 fn build_http(cache: Arc<Cache<String, String>>) -> Router {
     Router::new()
         .route("/info/{key}", get(get_value_http))
@@ -116,21 +131,47 @@ async fn get_value_http(Path(key): Path<String>, Extension(cache): Extension<Arc
     cache.get_value(&key).unwrap_or_else(|| "Not found".to_string())
 
 }
+fn now_epoch_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
 #[tokio::main]
 async fn main(){
 
 
     let cache = Arc::new(Cache::<String, String>::new());//arcs allows cache to be shared between threads
+    cache.read_from_file("dashmap.txt");
     cache.clone().clean_lfu();
+    let cache_clone = cache.clone();
+
+
+    let ctrlc_listener = tokio::spawn(async move {
+        println!("CTRL+C pressed");
+        signal::ctrl_c().await.expect("failed to install CTRL+C handler");
+        cache_clone.write_to_file("dashmap.txt");
+
+        std::process::exit(0);
+    });
+
 
     cache.insert("foo".to_string(), "bar".to_string());
-    cache.insert("sam".to_string(), "bar".to_string());
-
+    cache.insert("hello".to_string(), "world".to_string());
+    cache.insert("user".to_string(), "alice".to_string());
+    cache.insert("session".to_string(), "xyz123".to_string());
+    cache.insert("token".to_string(), "abc987".to_string());
     cache.insert("http".to_string(), "lol".to_string());
+    cache.insert("config".to_string(), "enabled".to_string());
+    cache.insert("env".to_string(), "production".to_string());
+    cache.insert("item1".to_string(), "value1".to_string());
+    cache.insert("item2".to_string(), "value2".to_string());
 
     let app = build_http(cache.clone());
-    let addr = SocketAddr::from(([127, 0, 0, 1], 5000));
+    let addr = SocketAddr::from(([127, 0, 0, 1], 5000));//http://127.0.0.1:5000/
     println!("listening on {}", addr);
+
     let server_handle = tokio::spawn(async move {
         axum_server::bind(addr)
             .serve(app.into_make_service())
@@ -151,5 +192,7 @@ async fn main(){
         println!("Got after wait: {}", val);
     }
     server_handle.await.unwrap();
+
+    println!("Exiting")
 }
 

@@ -9,6 +9,8 @@ dependencies = [
  "axum",
  "axum-server",
  "dashmap",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
