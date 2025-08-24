@@ -4,9 +4,12 @@ use std::time::Duration;
 use std::time::Instant;
 use std::thread::sleep;
 use std::sync::Arc;
-use std::fs::File;
 use std::io::Write;
 use std::fs::OpenOptions;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::error::Error;
+use std::net::SocketAddr;
 
 static DURATION: Duration = Duration::from_secs(5);
 static CAPACITY: usize = 100;
@@ -30,6 +33,28 @@ impl<K, V> Cache<K, V> where
         Cache {
             map: DashMap::new(),
         }
+    }
+    async fn process_socket(&self, mut socket: TcpStream){
+        println!("Got connection!");
+        let mut stream = socket;
+        stream.write_all(b"Hello, world!").await.unwrap();
+    }
+    async fn accept_connection(self: Arc<Self>, addr: &str) -> Result<(),Box<dyn Error>>  {
+        println!("Listening on: {}", addr);
+        let listener = TcpListener::bind(addr).await?;
+
+            loop {
+                let (socket, client_addr) : (TcpStream, SocketAddr) = listener.accept().await?;
+                println!("Got connection from: {}", client_addr);
+                let self_clone = self.clone();
+
+                tokio::spawn(async move {
+                    self_clone.process_socket(socket).await;//create new thread to process socket
+                });
+            }
+
+
+        Ok(())
     }
 
     fn clean_lfu(self: Arc<Self>){
@@ -103,11 +128,21 @@ impl<K, V> Cache<K, V> where
 }
 
 
-
 #[tokio::main]
-async fn main() {
+async fn main(){
+
+
     let cache = Arc::new(Cache::<String, String>::new());//arcs allows cache to be shared between threads
     cache.clone().clean_lfu();
+
+    let server_handle = tokio::spawn({
+        let cache_clone = cache.clone();
+        async move {
+            cache_clone.accept_connection("127.0.0.1:8080").await.expect("Server failed to start")
+        }
+    });
+
+
 
     cache.insert("foo".to_string(), "bar".to_string());
 
@@ -117,11 +152,11 @@ async fn main() {
         println!("Missing immediately!");
     }
 
-    sleep(DURATION + Duration::from_secs(1));
+    tokio::time::sleep(DURATION + Duration::from_secs(1)).await;
 
     if let Some(val) = cache.get(&"foo".to_string()) {
         println!("Got after wait: {}", val);
     }
-
+    server_handle.await.unwrap();
 }
 

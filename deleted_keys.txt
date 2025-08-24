@@ -2,3 +2,19 @@ Key: foo, Value: bar
 Key: foo, Value: bar, Expiry: 1.000299124s, Frequency: 2
 Key: foo, Value: bar, Expiry: 1.000276129s, Frequency: 2
 Key: foo, Value: bar, Expiry: 1.000302486s, Frequency: 1
+Key: foo, Value: CacheEntry {
+    value: "bar",
+    expires_at: Instant {
+        tv_sec: 21786,
+        tv_nsec: 838662806,
+    },
+    frequency: 1,
+}
+Key: foo, Value: bar, Expiry: 1.000120884s, Frequency: 1
+Key: foo, Value: bar, Expiry: 1.000422904s, Frequency: 1
+Key: foo, Value: bar, Expiry: 1.001152907s, Frequency: 1
+Key: foo, Value: bar, Expiry: 1.00147854s, Frequency: 1
+Key: foo, Value: bar, Expiry: 1.001423031s, Frequency: 1
+Key: foo, Value: bar, Expiry: 1.000659011s, Frequency: 1
+Key: foo, Value: bar, Expiry: 1.001451535s, Frequency: 1
+Key: foo, Value: bar, Expiry: 1.000895309s, Frequency: 1
