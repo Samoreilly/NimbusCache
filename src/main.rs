@@ -13,6 +13,7 @@ use serde_json;
 use tokio::signal;
 use std::fs::File;
 use std::io::BufReader;
+use axum::routing::post;
 use serde::de::DeserializeOwned;
 
 static DURATION: Duration = Duration::from_secs(100);
@@ -64,7 +65,6 @@ impl<K, V> Cache<K, V> where
     fn get_value(&self, key: &K) -> Option<V>{
 
         if let Some(mut self_ref) = self.map.get_mut(key) {//gets direct object so it can be modified in place
-
             if now_epoch_seconds() >= self_ref.expires_at {
                 let cloned_key = key.clone();
 
@@ -103,7 +103,7 @@ impl<K, V> Cache<K, V> where
         let file = File::open(path).expect("file not found");
         let reader = BufReader::new(file);
 
-        let entries: Vec<(K, CacheEntry<V>)> = serde_json::from_reader(reader).unwrap();
+        let entries: Vec<(K, CacheEntry<V>)> = serde_json::from_reader(reader).unwrap_or_default();
 
         for(k, v) in entries {
             self.map.insert(k, v);
@@ -116,19 +116,24 @@ impl<K, V> Cache<K, V> where
 
         let serialized = serde_json::to_string_pretty(&entries).unwrap();
 
-        std::fs::write("dashmap.txt", serialized).unwrap();
+        std::fs::write(path, serialized).unwrap();
     }
 }
 
 fn build_http(cache: Arc<Cache<String, String>>) -> Router {
     Router::new()
         .route("/info/{key}", get(get_value_http))
+        .route("/put/{key}/{value}", post(put_value_http))
         .layer(Extension(cache))
 
 }
 async fn get_value_http(Path(key): Path<String>, Extension(cache): Extension<Arc<Cache<String, String>>>)
                         -> String {
     cache.get_value(&key).unwrap_or_else(|| "Not found".to_string())
+}
+async fn put_value_http(Path((key, value)): Path<(String, String)>, Extension(cache): Extension<Arc<Cache<String, String>>>){
+    cache.insert(key.clone(), value.clone());
+    println!("Key={}, Value={}", key, value)
 
 }
 fn now_epoch_seconds() -> u64 {
@@ -148,7 +153,7 @@ async fn main(){
     let cache_clone = cache.clone();
 
 
-    let ctrlc_listener = tokio::spawn(async move {
+    let _ctrlc_listener = tokio::spawn(async move {
         println!("CTRL+C pressed");
         signal::ctrl_c().await.expect("failed to install CTRL+C handler");
         cache_clone.write_to_file("dashmap.txt");
